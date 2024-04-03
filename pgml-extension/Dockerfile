@@ -1,8 +1,9 @@
-FROM debian:bullseye-slim as builder
+FROM ubuntu:22.04 as builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     binutils \
+    gcc \
     gawk \
     bison \
     flex \
@@ -24,32 +25,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
     zlib1g-dev \
+    lld \
     && rm -rf /var/lib/apt/lists/*
 
-RUN wget -c https://ftp.gnu.org/gnu/glibc/glibc-2.35.tar.gz && \
-    tar -zxvf glibc-2.35.tar.gz && cd glibc-2.35 && \
-    mkdir glibc-build && cd glibc-build && \
-    ../configure --prefix=/opt/glibc && \
-    make && \
-    make install
+RUN apt-get update && \
+    apt-get install -y gnupg2 && \
+    wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - && \
+    echo "deb http://apt.postgresql.org/pub/repos/apt jammy-pgdg main" > /etc/apt/sources.list.d/pgdg.list && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" postgresql-server-dev-15 postgresql-15
 
-# Add the PostgreSQL APT repository
-RUN curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql-keyring.gpg
-RUN echo "deb [signed-by=/usr/share/keyrings/postgresql-keyring.gpg] http://apt.postgresql.org/pub/repos/apt bullseye-pgdg main" > /etc/apt/sources.list.d/postgresql.list
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    postgresql-server-dev-15 \
-    && rm -rf /var/lib/apt/lists/*
+ENV PATH="/usr/lib/postgresql/15/bin:${PATH}"
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
+ENV PATH="/usr/bin:${PATH}"
+
 WORKDIR /postgresml
 
 COPY . .
-
-# RUN apt-get update -y && apt-get upgrade -y
-# RUN apt-get install -y --no-install-recommends --no-install-suggests cmake build-essential git libclang-dev libpython3-dev libssl-dev libopenblas-dev pkg-config libicu-dev libreadline-dev zlib1g-dev flex bison libpq-dev
 
 RUN cargo install --locked cargo-pgrx
 RUN cargo pgrx init
@@ -57,7 +52,7 @@ RUN cargo pgrx init
 RUN cargo pgrx package
 
 # Extract the extension name from the manifest
-RUN export EXTENSION_NAME=$(grep 'name =' Cargo.toml | head -n 1 | cut -d '"' -f 2)
+ENV EXTENSION_NAME=pgml
 
 # Save the extension files for the next stage
 RUN mkdir -p /build && cp target/release/${EXTENSION_NAME}.so /build/ && cp target/release/${EXTENSION_NAME}.control /build/
@@ -80,4 +75,4 @@ RUN echo "CREATE EXTENSION age;" > /docker-entrypoint-initdb.d/init-age.sql
 # Set the necessary permissions for the extension
 RUN chown -R postgres:postgres /usr/local/lib/postgresql/
 
-CMD ["postgres", "-c", "shared_preload_libraries=age,pgml"]
+CMD ["postgres", "-c", "shared_preload_libraries=age,${EXTENSION_NAME}"]
